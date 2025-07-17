@@ -4,7 +4,7 @@ const puppeteer = require('puppeteer');
 const app = express();
 const port = process.env.PORT || 3000;
 
-app.use(express.json());
+app.use(express.json()); // Meskipun tidak lagi menerima JSON untuk /scrape, ini tetap bisa berguna untuk endpoint lain.
 
 // Deklarasikan variabel global untuk menyimpan instans browser
 let browserInstance = null;
@@ -29,8 +29,6 @@ async function launchBrowser() {
         browserInstance.on('disconnected', () => {
             console.error('Puppeteer browser disconnected! Re-launching...');
             browserInstance = null; // Setel ke null agar bisa diluncurkan ulang
-            // Anda bisa menambahkan logika retry di sini jika perlu,
-            // atau biarkan request berikutnya yang akan memicu peluncuran ulang.
         });
 
     } catch (error) {
@@ -43,12 +41,15 @@ async function launchBrowser() {
 // Panggil fungsi untuk meluncurkan browser saat aplikasi dimulai
 launchBrowser();
 
-// Endpoint utama untuk scraping
-app.post('/scrape', async (req, res) => {
-    const { url } = req.body;
+// ---
+
+// Endpoint utama untuk scraping, sekarang menggunakan GET
+app.get('/scrape', async (req, res) => {
+    // Mengambil URL dari query parameter (misal: /scrape?url=https://example.com)
+    const url = req.query.url;
 
     if (!url) {
-        return res.status(400).json({ error: 'URL is required in the request body.' });
+        return res.status(400).json({ error: 'URL is required as a query parameter (e.g., /scrape?url=...).' });
     }
 
     // Pastikan browser sudah siap. Jika belum, coba luncurkan ulang.
