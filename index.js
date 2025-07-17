@@ -18,16 +18,16 @@ app.post('/scrape', async (req, res) => {
     try {
         // Luncurkan browser Puppeteer
         // Menggunakan args ini penting untuk lingkungan tanpa GUI seperti Render
-        browser = await puppeteer.launch({
+           browser = await puppeteer.launch({
+            headless: true, // Ensure it's explicitly headless for server environment
             args: [
                 '--no-sandbox',
                 '--disable-setuid-sandbox',
-                '--disable-dev-shm-usage', // Penting untuk mencegah masalah memori
-                '--disable-accelerated-video-decode',
-                '--disable-gpu',
-                '--no-zygote',
-                '--single-process' // Penting untuk mengurangi penggunaan sumber daya
-            ]
+                '--disable-dev-shm-usage', // Important for memory issues
+                '--single-process' // Reduces resource usage and often helps stability
+            ],
+            // Use the executable path provided by the environment variable
+            executablePath: process.env.PUPPETEER_EXECUTABLE_PATH || undefined
         });
         const page = await browser.newPage();
 
