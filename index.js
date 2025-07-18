@@ -1,5 +1,12 @@
 const express = require('express');
-const puppeteer = require('puppeteer');
+// Ganti ini:
+// const puppeteer = require('puppeteer');
+// Dengan ini:
+const puppeteer = require('puppeteer-extra'); // Menggunakan puppeteer-extra
+const StealthPlugin = require('puppeteer-extra-plugin-stealth'); // Import StealthPlugin
+
+// Daftarkan plugin stealth sebelum meluncurkan browser
+puppeteer.use(StealthPlugin());
 
 const app = express();
 const port = process.env.PORT || 3000;
@@ -25,12 +32,12 @@ async function launchBrowser() {
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH, // Untuk lingkungan khusus
       headless: true, // Pastikan ini true untuk lingkungan server produksi
       args: [
-        '--no-sandbox',                // Penting untuk lingkungan kontainer (Render)
-        '--disable-setuid-sandbox',    // Penting untuk lingkungan kontainer
-        '--disable-dev-shm-usage',     // Mengurangi penggunaan memori di /dev/shm
-        '--single-process',            // Mengurangi jejak memori dengan hanya satu proses Chrome
-        '--disable-gpu',               // Mengurangi penggunaan GPU yang mungkin tidak ada
-        '--no-zygote'                  // Membantu dengan stabilitas di beberapa lingkungan
+        '--no-sandbox',           // Penting untuk lingkungan kontainer (Render)
+        '--disable-setuid-sandbox', // Penting untuk lingkungan kontainer
+        '--disable-dev-shm-usage',  // Mengurangi penggunaan memori di /dev/shm
+        '--single-process',       // Mengurangi jejak memori dengan hanya satu proses Chrome
+        '--disable-gpu',          // Mengurangi penggunaan GPU yang mungkin tidak ada
+        '--no-zygote'             // Membantu dengan stabilitas di beberapa lingkungan
       ]
     });
     console.log('Puppeteer browser launched successfully.');
@@ -60,8 +67,6 @@ async function scrapeUrlWithNewPage(url) {
   let page;
   try {
     if (!browserInstance) {
-      // Ini seharusnya tidak terjadi jika launchBrowser() dipanggil saat startup
-      // Tapi sebagai fallback, coba luncurkan ulang
       console.warn('Browser instance is null when trying to create a new page. Re-launching...');
       await launchBrowser();
       if (!browserInstance) {
@@ -72,15 +77,26 @@ async function scrapeUrlWithNewPage(url) {
     page = await browserInstance.newPage();
     console.log(`Created new page for: ${url}`);
 
-    // Setel User Agent agar terlihat lebih seperti browser sungguhan
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    // Dengan puppeteer-extra dan stealth plugin, Anda tidak perlu mengatur User-Agent secara manual
+    // Plugin sudah menangani banyak aspek deteksi bot, termasuk user-agent.
+    // Jika masih ada masalah, Anda bisa coba mengaturnya lagi, tapi biarkan stealth plugin bekerja dulu.
+    // await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
 
     // Timeout yang lebih rendah untuk navigasi jika page macet
     const navigationTimeout = 60000; // 60 detik
 
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navigationTimeout }); // Lebih cepat dari networkidle2
-    // Alternatif: waitUntil: 'networkidle0' jika Anda perlu semua permintaan selesai
-    // Atau bisa juga: waitUntil: 'load' jika hanya perlu menunggu event load
+    // Coba tambahkan penundaan awal sebelum navigasi, kadang membantu Cloudflare "berpikir"
+    // await page.waitForTimeout(1000); // Tambahkan jeda 1 detik
+
+    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navigationTimeout });
+
+    // --- PENTING: Tambahkan penundaan setelah navigasi untuk Cloudflare ---
+    // Cloudflare sering membutuhkan waktu beberapa detik untuk melakukan pemeriksaan
+    // dan menyelesaikan tantangan. Menunggu di sini bisa sangat membantu.
+    console.log('Waiting for Cloudflare challenge to potentially resolve...');
+    await page.waitForTimeout(8000); // Tunggu 8 detik. Sesuaikan jika perlu.
+    // Atau coba cari elemen yang muncul setelah Cloudflare terlewati, contoh:
+    // await page.waitForSelector('body', { timeout: 15000 }); // Tunggu body muncul, atau elemen spesifik lain
 
     const htmlContent = await page.content();
     console.log(`Successfully scraped content from: ${url}`);
@@ -88,6 +104,11 @@ async function scrapeUrlWithNewPage(url) {
 
   } catch (error) {
     console.error(`Error scraping ${url}:`, error);
+    // Coba log konten jika ada error untuk debugging lebih lanjut
+    if (page) {
+      const errorPageContent = await page.content();
+      console.error('Content of the page on error:', errorPageContent.substring(0, 500) + '...'); // Log 500 karakter pertama
+    }
     throw error; // Lempar kembali error agar bisa ditangani di endpoint
   } finally {
     if (page) {
