@@ -8,6 +8,12 @@ app.use(express.json());
 
 // Deklarasikan variabel global untuk menyimpan instans browser
 let browserInstance = null;
+// Gunakan variabel global untuk menyimpan satu halaman yang bisa di-reuse
+// Ini HANYA bisa dilakukan jika Anda YAKIN setiap request tidak akan berinterferensi.
+// Untuk penggunaan umum, membuat page baru per request lebih aman.
+// Namun, demi HEMAT MEMORI di tier free, kita bisa coba reuse.
+// Jika ada masalah konkurensi, ini akan jadi penyebabnya.
+let sharedPageInstance = null;
 
 /**
  * Fungsi untuk meluncurkan browser Puppeteer.
@@ -23,23 +29,38 @@ async function launchBrowser() {
     console.log('Launching Puppeteer browser...');
     browserInstance = await puppeteer.launch({
       executablePath: process.env.PUPPETEER_EXECUTABLE_PATH, // Untuk lingkungan khusus
-      headless: true, // Pastikan ini true untuk lingkungan server produksi
+      headless: true, // WAJIB true untuk lingkungan server produksi
       args: [
-        '--no-sandbox',                // Penting untuk lingkungan kontainer (Render)
-        '--disable-setuid-sandbox',    // Penting untuk lingkungan kontainer
-        '--disable-dev-shm-usage',     // Mengurangi penggunaan memori di /dev/shm
-        '--single-process',            // Mengurangi jejak memori dengan hanya satu proses Chrome
-        '--disable-gpu',               // Mengurangi penggunaan GPU yang mungkin tidak ada
-        '--no-zygote'                  // Membantu dengan stabilitas di beberapa lingkungan
-      ]
+        '--no-sandbox',                  // Penting untuk lingkungan kontainer (Render)
+        '--disable-setuid-sandbox',      // Penting untuk lingkungan kontainer
+        '--disable-dev-shm-usage',       // Mengurangi penggunaan memori di /dev/shm
+        '--single-process',              // Mengurangi jejak memori dengan hanya satu proses Chrome
+        '--disable-gpu',                 // Mengurangi penggunaan GPU yang mungkin tidak ada
+        '--no-zygote',                   // Membantu dengan stabilitas di beberapa lingkungan
+        '--disable-setuid-sandbox',      // Duplikasi tapi memastikan
+        '--disable-extensions',          // Matikan ekstensi
+        '--disable-features=site-per-process', // Mengurangi isolasi proses, hati-hati!
+        '--incognito'                    // Mode incognito untuk memastikan sesi bersih
+      ],
+      // Menurunkan resolusi viewport default untuk menghemat memori
+      defaultViewport: {
+        width: 800,
+        height: 600
+      }
     });
     console.log('Puppeteer browser launched successfully.');
 
+    // Inisialisasi sharedPageInstance sekali
+    sharedPageInstance = await browserInstance.newPage();
+    // Atur User Agent di halaman bersama
+    await sharedPageInstance.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
+    console.log('Shared page instance created.');
+
     // Tambahkan event listener untuk menangani disconnect (misalnya, browser crash)
     browserInstance.on('disconnected', () => {
-      console.error('Puppeteer browser disconnected! Attempting to nullify instance...');
-      browserInstance = null; // Setel ke null agar bisa diluncurkan ulang saat permintaan berikutnya
-      // Anda mungkin ingin menambahkan logika retry atau notifikasi di sini
+      console.error('Puppeteer browser disconnected! Attempting to nullify instances and re-launch...');
+      browserInstance = null; // Setel ke null agar bisa diluncurkan ulang
+      sharedPageInstance = null; // Juga null-kan halaman bersama
     });
 
   } catch (error) {
@@ -51,50 +72,34 @@ async function launchBrowser() {
 }
 
 /**
- * Fungsi untuk mendapatkan halaman baru dari browser yang sudah ada.
- * Mengelola timeout untuk page.goto dan menutup halaman setelah selesai.
+ * Fungsi untuk melakukan scraping. Sekarang menggunakan sharedPageInstance.
  * @param {string} url - URL yang akan discrape.
  * @returns {Promise<string>} HTML konten dari halaman.
  */
-async function scrapeUrlWithNewPage(url) {
-  let page;
+async function scrapeUrl(url) {
+  if (!sharedPageInstance) {
+    throw new Error('Shared page instance is not available. Browser might have disconnected.');
+  }
+
   try {
-    if (!browserInstance) {
-      // Ini seharusnya tidak terjadi jika launchBrowser() dipanggil saat startup
-      // Tapi sebagai fallback, coba luncurkan ulang
-      console.warn('Browser instance is null when trying to create a new page. Re-launching...');
-      await launchBrowser();
-      if (!browserInstance) {
-        throw new Error('Browser could not be launched or re-launched.');
-      }
-    }
+    console.log(`Navigating shared page to: ${url}`);
+    // Timeout yang lebih rendah untuk navigasi
+    const navigationTimeout = 30000; // 30 detik (kurangi dari 60 detik)
 
-    page = await browserInstance.newPage();
-    console.log(`Created new page for: ${url}`);
+    // Gunakan 'domcontentloaded' untuk kecepatan. Ini lebih cepat karena tidak menunggu semua resource.
+    // Jika Anda benar-benar membutuhkan semua resource, pertimbangkan 'load' atau 'networkidle0',
+    // tetapi itu akan lebih lambat dan memakan lebih banyak memori.
+    await sharedPageInstance.goto(url, { waitUntil: 'domcontentloaded', timeout: navigationTimeout });
 
-    // Setel User Agent agar terlihat lebih seperti browser sungguhan
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36');
-
-    // Timeout yang lebih rendah untuk navigasi jika page macet
-    const navigationTimeout = 60000; // 60 detik
-
-    await page.goto(url, { waitUntil: 'domcontentloaded', timeout: navigationTimeout }); // Lebih cepat dari networkidle2
-    // Alternatif: waitUntil: 'networkidle0' jika Anda perlu semua permintaan selesai
-    // Atau bisa juga: waitUntil: 'load' jika hanya perlu menunggu event load
-
-    const htmlContent = await page.content();
+    const htmlContent = await sharedPageInstance.content();
     console.log(`Successfully scraped content from: ${url}`);
     return htmlContent;
 
   } catch (error) {
     console.error(`Error scraping ${url}:`, error);
     throw error; // Lempar kembali error agar bisa ditangani di endpoint
-  } finally {
-    if (page) {
-      await page.close(); // Selalu tutup halaman setelah selesai
-      console.log('Page closed.');
-    }
   }
+  // Tidak ada page.close() di sini karena kita me-reuse sharedPageInstance
 }
 
 // --- Inisialisasi Aplikasi ---
@@ -118,13 +123,13 @@ app.get('/scrape', async (req, res) => {
     return res.status(400).json({ error: 'URL is required as a query parameter (e.g., /scrape?url=...).' });
   }
 
-  // Cek kembali ketersediaan browserInstance sebelum memulai scraping
-  if (!browserInstance) {
-    console.warn('Browser instance is null, re-attempting launch before processing request.');
+  // Cek kembali ketersediaan browserInstance/sharedPageInstance sebelum memulai scraping
+  if (!browserInstance || !sharedPageInstance) {
+    console.warn('Browser or shared page instance is null. Attempting re-launch before processing request.');
     try {
-      await launchBrowser(); // Coba luncurkan ulang jika browserInstance null
-      if (!browserInstance) {
-        throw new Error('Failed to re-launch browser instance.');
+      await launchBrowser(); // Coba luncurkan ulang jika ada yang null
+      if (!browserInstance || !sharedPageInstance) {
+        throw new Error('Failed to re-launch browser and/or shared page instance.');
       }
     } catch (launchError) {
       console.error('Critical: Failed to re-launch browser for request:', launchError);
@@ -133,7 +138,7 @@ app.get('/scrape', async (req, res) => {
   }
 
   try {
-    const htmlContent = await scrapeUrlWithNewPage(url);
+    const htmlContent = await scrapeUrl(url);
     res.status(200).send(htmlContent);
   } catch (error) {
     console.error('Request processing error:', error);
