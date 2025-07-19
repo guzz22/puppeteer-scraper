@@ -94,7 +94,8 @@ async function scrapeUrlWithNewPage(url) {
     // Cloudflare sering membutuhkan waktu beberapa detik untuk melakukan pemeriksaan
     // dan menyelesaikan tantangan. Menunggu di sini bisa sangat membantu.
     console.log('Waiting for Cloudflare challenge to potentially resolve...');
-    await page.waitForTimeout(8000); // Tunggu 8 detik. Sesuaikan jika perlu.
+    console.log('Waiting for potential Cloudflare challenge resolution (using setTimeout)...');
+await new Promise(resolve => setTimeout(resolve, 8000)); // Menunggu 8 detik
     // Atau coba cari elemen yang muncul setelah Cloudflare terlewati, contoh:
     // await page.waitForSelector('body', { timeout: 15000 }); // Tunggu body muncul, atau elemen spesifik lain
 
